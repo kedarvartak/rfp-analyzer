@@ -1,0 +1,24 @@
+# Core dependencies
+fastapi==0.109.2
+python-multipart==0.0.9
+uvicorn==0.27.1
+pydantic==2.6.1
+
+# Document processing
+unstructured[pdf]==0.11.8
+python-dotenv==1.0.1
+
+# LangChain and related
+langchain==0.1.9
+langchain-community==0.0.24
+langchain-core==0.1.27
+
+# Vector store and embeddings
+chromadb==0.4.22
+sentence-transformers==2.5.1
+
+# Retrieval components
+rank-bm25==0.2.2
+
+# LLM integration
+langchain-ollama
