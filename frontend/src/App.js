@@ -1,8 +1,12 @@
 import { useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { uploadFile, queryDocument } from './api';
-
-import HeroSection from './components/landing';
-
+import Landing from './components/landing';
+import RAGInterface from './components/rag';
+import Navbar from './components/navbar';
+import Footer from './components/footer';
+import { ThemeProvider } from './components/theme';
+import { BrowserRouter } from 'react-router-dom';
 export default function App() {
   const [file, setFile] = useState(null);
   const [fileName, setFileName] = useState('');
@@ -52,6 +56,51 @@ export default function App() {
   };
 
   return (
-    <HeroSection />
+    <BrowserRouter>
+      <ThemeProvider>
+        <div className="min-h-screen bg-[#f8f8f8]">
+          <Navbar />
+          
+          <Routes>
+            {/* Landing Page Route */}
+            <Route 
+              path="/" 
+              element={
+                <div className="pt-16">
+                  <Landing />
+                </div>
+              } 
+            />
+
+            {/* RAG Interface Route */}
+            <Route 
+              path="/app" 
+              element={
+                <div className="pt-16">
+                  <RAGInterface
+                    fileName={fileName}
+                    onFileChange={handleFileChange}
+                    query={query}
+                    setQuery={setQuery}
+                    onSubmit={handleSubmit}
+                    loading={loading}
+                    isUploaded={isUploaded}
+                    results={results}
+                    error={error}
+                  />
+                </div>
+              } 
+            />
+
+            {/* Redirect any unknown routes to home */}
+            <Route 
+              path="*" 
+              element={<Navigate to="/" replace />} 
+            />
+          </Routes>
+          <Footer />
+        </div>
+      </ThemeProvider>
+    </BrowserRouter>
   );
 }
