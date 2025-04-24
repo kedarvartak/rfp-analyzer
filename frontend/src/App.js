@@ -74,7 +74,7 @@ export default function App() {
             <Route 
               path="/app" 
               element={
-                <div className="pt-16">
+                <div >
                   <RAGInterface
                     fileName={fileName}
                     onFileChange={handleFileChange}
