@@ -3,8 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-ro
 import { uploadFile, queryDocument } from './api';
 import Landing from './components/landing';
 import RAGInterface from './components/rag';
-import Navbar from './components/navbar';
-import Footer from './components/footer';
 import { ThemeProvider } from './components/theme';
 import { BrowserRouter } from 'react-router-dom';
 export default function App() {
@@ -59,14 +57,14 @@ export default function App() {
     <BrowserRouter>
       <ThemeProvider>
         <div className="min-h-screen bg-[#f8f8f8]">
-          <Navbar />
+         
           
           <Routes>
             {/* Landing Page Route */}
             <Route 
               path="/" 
               element={
-                <div className="pt-16">
+                <div >
                   <Landing />
                 </div>
               } 
@@ -98,7 +96,7 @@ export default function App() {
               element={<Navigate to="/" replace />} 
             />
           </Routes>
-          <Footer />
+          
         </div>
       </ThemeProvider>
     </BrowserRouter>

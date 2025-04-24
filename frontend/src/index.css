@@ -12,33 +12,35 @@ body {
   font-family: 'Raleway', sans-serif;
 }
 
-@keyframes float {
-  0% {
-    transform: translateY(100vh) scale(0);
-    opacity: 0;
-  }
-  50% {
-    opacity: 1;
-  }
-  100% {
-    transform: translateY(-100vh) scale(1);
-    opacity: 0;
-  }
+
+
+/* --- Ticker Animation --- */
+@keyframes vertical-ticker {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-50%); } /* Scrolls exactly half the height */
 }
 
-@layer utilities {
-  .backdrop-blur-sm {
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-  }
-  
-  .backdrop-blur-md {
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-  }
-  
-  .backdrop-blur-lg {
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-  }
+.animate-vertical-ticker {
+  /* Apply the animation */
+  animation: vertical-ticker 40s linear infinite; /* Adjust 40s duration for speed */
+}
+
+/* --- General Layout & Effects (Keep these) --- */
+body.no-scroll {
+  overflow: hidden;
+}
+
+body.crt-effect .crt-effect-container {
+  /* Optional CRT curvature */
+  /* perspective: 1000px; */
+  /* transform: perspective(1000px) rotateX(0.5deg); */
+}
+
+@keyframes scanline {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 100%; }
+}
+
+.animate-scanline {
+  animation: scanline 10s linear infinite;
 }
