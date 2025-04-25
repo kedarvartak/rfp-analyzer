@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-ro
 import { uploadFile, queryDocument } from './api';
 import Landing from './components/landing';
 import RAGInterface from './components/rag';
-import { ThemeProvider } from './components/theme';
 import { BrowserRouter } from 'react-router-dom';
 export default function App() {
   const [file, setFile] = useState(null);
@@ -55,8 +54,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <ThemeProvider>
-        <div className="min-h-screen bg-[#f8f8f8]">
+      <div className="min-h-screen bg-[#f8f8f8]">
          
           
           <Routes>
@@ -98,7 +96,7 @@ export default function App() {
           </Routes>
           
         </div>
-      </ThemeProvider>
+      
     </BrowserRouter>
   );
 }

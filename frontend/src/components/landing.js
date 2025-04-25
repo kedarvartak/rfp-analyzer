@@ -1,6 +1,6 @@
 // src/components/landing.js
 import { useEffect, useRef, useState } from 'react';
-import { useTheme } from '../components/theme';
+
 import { FaDiscord, FaXTwitter, FaMedium } from "react-icons/fa6";
 
 // --- Icons (Minimalist) ---
@@ -28,7 +28,6 @@ export default function Landing() {
   const canvasRef = useRef(null);
   const [isMounted, setIsMounted] = useState(false);
   const mousePos = useRef({ x: 0, y: 0 });
-  const { theme } = useTheme();
 
   useEffect(() => {
     setIsMounted(true);
