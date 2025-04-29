@@ -19,17 +19,17 @@ from langchain.prompts import PromptTemplate
 from pydantic import BaseModel
 import cohere
 
-# --- Import your NER function ---
-# Assuming analysis_models.py is in the same directory or adjust path
+# --- CORRECTED IMPORT ---
 try:
-    # If analysis.py is in a 'models' subdir: from models.analysis import extract_entities
-    from models.analysis import extract_entities # Corrected path assuming it's in root
-except ImportError:
-    print("Error: Could not import extract_entities from analysis.py.")
-    # Define a dummy function if import fails, so the app can still start
-    def extract_entities(text: str) -> dict:
-        print("Warning: Using dummy extract_entities function.")
-        return {"error": "Entity extraction module not loaded"}
+    from models.analysis import extract_structured_rfp_data # Import the new function
+    print("[Import Check] Successfully imported extract_structured_rfp_data from models.analysis")
+except ImportError as e:
+    print(f"Error: Could not import from models.analysis. Details: {e}")
+    # Define a dummy function
+    def extract_structured_rfp_data(text: str) -> dict:
+        print("Warning: Using dummy extract_structured_rfp_data function.")
+        return {"error": "Structured extraction module not loaded"}
+# -----------------------
 
 load_dotenv()
 
@@ -69,7 +69,7 @@ class HybridRAGSystem:
         self.model_name = model_name
         self.documents = []
         self.splits = [] # Initialize splits
-        self.full_text: str | None = None # ADDED: To store full document text
+        self.full_text: str | None = None # Make sure this is populated
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,
             chunk_overlap=100,
@@ -102,22 +102,16 @@ class HybridRAGSystem:
         if not self.documents:
             raise ValueError("Document loaded but resulted in no content.")
 
-        # --- ADDED: Store full text ---
+        # --- Store full text ---
         self.full_text = "\n\n".join([doc.page_content for doc in self.documents])
         print(f"[Backend] Stored full text (length: {len(self.full_text)} chars).")
         # -----------------------------
 
-        # Split documents into chunks
         self.splits = self.text_splitter.split_documents(self.documents)
         if not self.splits:
-             # This can happen if the document is very short or splitting fails
              print("Warning: Text splitting resulted in zero chunks. Using full document text as one chunk.")
-             # Create a single Document object from the full text if splits are empty
-             if self.full_text:
-                  self.splits = [Document(page_content=self.full_text)]
-             else:
-                  raise ValueError("Cannot proceed: Document loaded but no text content found for splitting.")
-
+             if self.full_text: self.splits = [Document(page_content=self.full_text)]
+             else: raise ValueError("Cannot proceed: No text content found.")
         print(f"[Backend] Created {len(self.splits)} chunks from the document")
 
     def setup_retrievers(self) -> None:
@@ -125,87 +119,44 @@ class HybridRAGSystem:
         if not self.splits:
              raise ValueError("Documents must be loaded and split before setting up retrievers.")
 
-        # --- Setup Base Retrievers ---
         print("\n[RAG DEBUG] Setting up base retrievers (Semantic + BM25)...")
-        # ChromaDB for semantic search
         self.vectorstore = Chroma.from_documents(
-            documents=self.splits,
-            embedding=self.embeddings,
-            # Consider persisting ChromaDB for larger datasets/production
-            # persist_directory="./chroma_db_hybrid",
-            collection_name="hybrid_rag" # Use a consistent name
+            documents=self.splits, embedding=self.embeddings, collection_name="hybrid_rag"
         )
-        self.semantic_retriever = self.vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": 5} # Retrieve top 5 initially
-        )
+        self.semantic_retriever = self.vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10}) # Increase initial K
+        self.bm25_retriever = BM25Retriever.from_documents(self.splits)
+        self.bm25_retriever.k = 10 # Increase initial K
 
-        # BM25 for keyword search
-        # Ensure splits is not empty before initializing BM25Retriever
-        if not self.splits:
-            print("Warning: No document splits available to initialize BM25Retriever.")
-            self.bm25_retriever = None # Explicitly set to None or handle appropriately
-        else:
-            self.bm25_retriever = BM25Retriever.from_documents(self.splits)
-            self.bm25_retriever.k = 5 # Retrieve top 5 initially
+        self.ensemble_retriever = EnsembleRetriever(retrievers=[self.semantic_retriever, self.bm25_retriever], weights=[0.7, 0.3]) # Adjust weights if needed
+        print("[RAG DEBUG] Base ensemble retriever setup complete (k=10).")
 
-
-        # Adjust Ensemble Retriever based on whether BM25 exists
-        if self.bm25_retriever:
-            self.ensemble_retriever = EnsembleRetriever(
-                retrievers=[self.semantic_retriever, self.bm25_retriever],
-                weights=[0.8, 0.2] # Favor semantic search results
-            )
-            print("[RAG DEBUG] Base ensemble retriever (Semantic + BM25) setup complete.")
-        else:
-             print("[RAG DEBUG] BM25 Retriever not available. Using only Semantic Retriever.")
-             self.ensemble_retriever = self.semantic_retriever # Fallback to only semantic
-
-        # --- Setup Compression Retriever with Cohere Rerank ---
         if COHERE_API_KEY:
             print("[RAG DEBUG] COHERE_API_KEY found. Setting up Cohere Rerank...")
             try:
-                # FIXED: Added the model parameter
-                reranker = CohereRerank(model="rerank-english-v2.0", top_n=3)
-                self.compression_retriever = ContextualCompressionRetriever(
-                    base_compressor=reranker,
-                    base_retriever=self.ensemble_retriever # Use the ensemble (or semantic fallback) as the base
-                )
-                print("[RAG DEBUG] ContextualCompressionRetriever with CohereRerank(model='rerank-english-v2.0', top_n=3) setup complete.")
+                reranker = CohereRerank(model="rerank-english-v2.0", top_n=5) # Increase top_n slightly
+                self.compression_retriever = ContextualCompressionRetriever(base_compressor=reranker, base_retriever=self.ensemble_retriever)
+                print("[RAG DEBUG] ContextualCompressionRetriever with CohereRerank(top_n=5) setup complete.")
             except Exception as e:
-                print(f"[RAG DEBUG] Error setting up CohereRerank: {e}. Falling back to base retriever.")
-                self.compression_retriever = self.ensemble_retriever # Fallback
+                print(f"[RAG DEBUG] Error setting up CohereRerank: {e}. Falling back to ensemble retriever.")
+                self.compression_retriever = self.ensemble_retriever
         else:
-            print("[RAG DEBUG] COHERE_API_KEY not found. Using base retriever without reranking.")
-            self.compression_retriever = self.ensemble_retriever # Use ensemble/semantic if no key
+            print("[RAG DEBUG] COHERE_API_KEY not found. Using standard ensemble retriever without reranking.")
+            self.compression_retriever = self.ensemble_retriever
 
     def setup_rag(self) -> None:
         """Set up the RAG chain using the compression retriever."""
         if not self.compression_retriever:
              raise ValueError("Retrievers must be set up before setting up the RAG chain.")
-
-        retriever_type = "Compression Retriever (with Cohere Rerank if API key was valid)" if COHERE_API_KEY and isinstance(self.compression_retriever, ContextualCompressionRetriever) and isinstance(self.compression_retriever.base_compressor, CohereRerank) else "Ensemble/Semantic Retriever (No Reranking)"
+        retriever_type = "Compression Retriever (Cohere Rerank)" if isinstance(self.compression_retriever, ContextualCompressionRetriever) and isinstance(self.compression_retriever.base_compressor, CohereRerank) else "Ensemble/Semantic Retriever"
         print(f"\n[RAG DEBUG] Setting up RAG chain with retriever type: {retriever_type}")
-
         try:
-            llm = Ollama(
-                model=self.model_name,
-                temperature=0.2, # Slightly lower temp might help with factuality
-                base_url="http://localhost:11434" # Ensure Ollama is running here
-            )
-
-            # Use the compression_retriever (which includes reranking if API key is set)
+            llm_rag = Ollama(model=self.model_name, base_url="http://localhost:11434", temperature=0.2)
             self.rag_chain = RetrievalQA.from_chain_type(
-                llm=llm,
-                chain_type="stuff", # Suitable for smaller, reranked context
-                retriever=self.compression_retriever, # Use the retriever with reranking
-                return_source_documents=True,
-                chain_type_kwargs={"prompt": PROMPT} # Pass the defined prompt
+                llm=llm_rag, chain_type="stuff", retriever=self.compression_retriever,
+                return_source_documents=True, chain_type_kwargs={"prompt": PROMPT}
             )
             print("[RAG DEBUG] RAG chain setup complete.")
-        except Exception as e:
-            print(f"[RAG DEBUG] Error setting up RAG chain: {str(e)}")
-            raise
+        except Exception as e: print(f"[RAG DEBUG] Error setting up RAG chain: {str(e)}"); raise
 
     def query(self, question: str) -> Tuple[str, List[Document]]:
         """Query the RAG system"""
@@ -213,8 +164,7 @@ class HybridRAGSystem:
             raise ValueError("RAG chain not initialized. Please call setup_rag() first after loading data.")
 
         retriever_in_use = self.rag_chain.retriever.__class__.__name__
-        base_retriever_type = "N/A"
-        compressor_type = "N/A"
+        base_retriever_type = "N/A"; compressor_type = "N/A"
 
         if isinstance(self.rag_chain.retriever, ContextualCompressionRetriever):
              retriever_in_use = "ContextualCompressionRetriever"
@@ -223,13 +173,11 @@ class HybridRAGSystem:
         elif hasattr(self.rag_chain.retriever, '__class__'): # Handle cases where it's not a compression retriever
             retriever_in_use = self.rag_chain.retriever.__class__.__name__
 
-
         print(f"\n[RAG DEBUG] Invoking RAG chain with question: '{question}'")
         print(f"[RAG DEBUG] Retriever in use by chain: {retriever_in_use}")
         if retriever_in_use == "ContextualCompressionRetriever":
             print(f"[RAG DEBUG]   Base Retriever: {base_retriever_type}")
             print(f"[RAG DEBUG]   Compressor: {compressor_type}")
-
 
         result = self.rag_chain.invoke({"query": question}) # Ensure input key matches chain expectation
         print("[RAG DEBUG] RAG chain invocation complete.")
@@ -305,28 +253,30 @@ async def query_endpoint(question: str = Form(...)): # Renamed to avoid conflict
         print(f"\n[Backend] {error_message}")
         raise HTTPException(status_code=500, detail=error_message)
 
-# --- NEW ENDPOINT for NER ---
-@app.get("/extract-entities")
-async def get_extracted_entities():
+# --- MODIFIED/RENAMED ENDPOINT for Structured Extraction ---
+@app.get("/analyze-rfp-details")
+async def get_rfp_analysis():
     """
-    Endpoint to trigger entity extraction on the last uploaded document's text.
+    Endpoint to trigger structured LLM extraction on the last uploaded document.
     """
-    print("\n[Backend] Received request for /extract-entities")
+    print("\n[Backend] Received request for /analyze-rfp-details")
     if not rag_system.full_text:
-        print("[Backend] Error: No document text loaded for entity extraction.")
+        print("[Backend] Error: No document text loaded for analysis.")
         raise HTTPException(status_code=400, detail="No document has been uploaded and processed yet.")
 
     try:
-        print("[Backend] Calling extract_entities function...")
-        entities = extract_entities(rag_system.full_text)
-        print(f"[Backend] Entity extraction complete. Found {len(entities)} categories.")
+        print("[Backend] Calling extract_structured_rfp_data function...")
+        # Pass the stored full text to the extraction function
+        structured_data = extract_structured_rfp_data(rag_system.full_text)
+        print(f"[Backend] Structured extraction complete.")
 
-        if "error" in entities: # Check if the dummy function was used or analysis failed
-             raise HTTPException(status_code=500, detail=f"Entity extraction failed: {entities['error']}")
+        if "error" in structured_data: # Check for errors from the extraction function
+             print(f"[Backend] Error returned from extraction function: {structured_data['error']}")
+             raise HTTPException(status_code=500, detail=f"Structured extraction failed: {structured_data['error']}")
 
-        return entities
+        return structured_data
     except Exception as e:
-        error_message = f"Error during entity extraction: {str(e)}"
+        error_message = f"Error during structured analysis: {str(e)}"
         print(f"[Backend] {error_message}")
         raise HTTPException(status_code=500, detail=error_message)
 

@@ -1,255 +1,282 @@
 # analysis_models.py
-import spacy
-from collections import defaultdict
-import re # Import regular expressions for pattern matching
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from langchain_community.llms import Ollama
+from langchain.output_parsers import PydanticOutputParser
+from langchain.prompts import PromptTemplate
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+import os
+import json
 
-print("Loading spaCy model (en_core_web_lg)... This might take a moment.")
-nlp = None # Initialize nlp as None
+# --- Define Structured Output Schemas using Pydantic ---
+
+class SubmissionDetail(BaseModel):
+    deadline_date: Optional[str] = Field(None, description="The final date for submission (YYYY-MM-DD if possible, otherwise as stated).")
+    deadline_time: Optional[str] = Field(None, description="The final time for submission (HH:MM if possible, include timezone if stated).")
+    submission_method: Optional[str] = Field(None, description="How the proposal must be submitted (e.g., electronically via portal, email, mail).")
+
+class FormattingDetail(BaseModel):
+    section: Optional[str] = Field(None, description="Specific section the limit applies to (e.g., 'technical volume', 'management plan', 'overall').")
+    page_limit: Optional[int] = Field(None, description="The maximum number of pages allowed for the section.")
+
+class FormattingRequirements(BaseModel):
+    page_limits: List[FormattingDetail] = Field(default_factory=list, description="List of page limit requirements for different sections.")
+    font_details: Optional[str] = Field(None, description="Required font specifications (e.g., 'Times New Roman 12pt', 'Arial 11pt').")
+    line_spacing: Optional[str] = Field(None, description="Required line spacing (e.g., 'single', 'double', '1.5 lines').")
+    required_sections: List[str] = Field(default_factory=list, description="List any specific section titles explicitly required (e.g., 'Table of Contents', 'Executive Summary').")
+
+class EligibilityRequirement(BaseModel):
+    requirement_type: str = Field(description="Type of requirement (e.g., 'Certification', 'Registration', 'Experience', 'Insurance')")
+    details: str = Field(description="Specific details of the requirement (e.g., 'ISO 9001', 'Registered in Virginia', '5 years Agile experience', '$1M General Liability').")
+    is_mandatory: Optional[bool] = Field(None, description="True if explicitly stated as mandatory/required, False if preferred/desired, None if unclear.")
+
+class RFPAnalysis(BaseModel):
+    """Structured information extracted from an RFP document."""
+    issuing_agency: Optional[str] = Field(None, description="The name of the agency or organization issuing the RFP.")
+    solicitation_number: Optional[str] = Field(None, description="The official RFP/solicitation identifier number, if found.")
+    submission_details: Optional[SubmissionDetail] = Field(None, description="Details regarding proposal submission.")
+    formatting_requirements: Optional[FormattingRequirements] = Field(None, description="Specific formatting rules for the proposal.")
+    eligibility_criteria: List[EligibilityRequirement] = Field(default_factory=list, description="List of key eligibility requirements extracted.")
+    # Add more fields as needed (e.g., contact_person, contract_value_estimate, key_dates)
+
+# --- LLM Extraction Function ---
+
+# Initialize LLM (ensure Ollama is running)
+# Use the same model name as in rag.py for consistency, or choose another if needed
+LLM_MODEL_NAME = os.getenv("OLLAMA_MODEL", "phi3:mini") # Default to mistral if not set
 try:
-    # Load model, disabling components less likely to be needed for senter/ner
-    nlp = spacy.load("en_core_web_lg", disable=["lemmatizer", "attribute_ruler"])
-    print(f"Initial pipeline after load: {nlp.pipe_names}")
-
-    # --- FIX: Add 'senter' if it's actually missing ---
-    if not nlp.has_pipe("senter"):
-        print("Warning: 'senter' pipe not found, adding it...")
-        # Add before 'ner' if possible, otherwise first
-        try:
-             nlp.add_pipe("senter", before="ner")
-             print("Added 'senter' pipe before 'ner'.")
-        except ValueError: # If 'ner' isn't there or other issues
-             try:
-                 nlp.add_pipe("senter", first=True)
-                 print("Added 'senter' pipe first.")
-             except ValueError as e_add:
-                 print(f"Could not add 'senter' pipe: {e_add}")
-                 raise # Re-raise if adding fails critically
-    # ---------------------------------------------
-
-    print(f"Final spaCy pipeline: {nlp.pipe_names}")
-
-except OSError as e:
-    # Specific error for model not found
-    print(f"OSError loading spaCy model: {e}")
-    print("Model 'en_core_web_lg' likely not downloaded or installed correctly.")
-    print("Please run: python -m spacy download en_core_web_lg")
+    llm = Ollama(model=LLM_MODEL_NAME, base_url="http://localhost:11434", temperature=0.1)
+    print(f"[Analysis] Initialized Ollama LLM with model: {LLM_MODEL_NAME}")
 except Exception as e:
-    # Catch any other unexpected error during loading
-    print(f"Unexpected error loading/configuring spaCy model: {e}")
-    print("Check spaCy installation, model download, and memory usage.")
-    nlp = None # Ensure nlp is None on any load error
+    print(f"[Analysis] ERROR initializing Ollama LLM: {e}")
+    llm = None
 
-# --- Enhanced Entity Extraction with Context ---
+# --- Text Splitter for Chunking ---
+# Use similar settings as in rag.py for consistency, adjust if needed
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=2000, # Larger chunk size for extraction might capture more context
+    chunk_overlap=200,
+    length_function=len,
+    separators=["\n\n", "\n", ". ", ", ", " ", ""] # Added ". " and ", "
+)
 
-def extract_entities_with_context(text: str) -> dict:
+# --- Helper Function for Merging Results ---
+def merge_analysis_results(results: List[Dict]) -> Dict:
+    """Merges results from multiple chunks into a single consolidated dictionary."""
+    print(f"[Analysis Merge] Merging results from {len(results)} chunks...")
+    merged = RFPAnalysis().dict() # Start with an empty Pydantic model dict
+
+    # Simple fields: Take the first non-null value found
+    simple_fields = ['issuing_agency', 'solicitation_number']
+    for field in simple_fields:
+        for res in results:
+            if res.get(field):
+                merged[field] = res[field]
+                break # Found one, move to next field
+
+    # Nested objects: Merge fields within them, prioritizing non-nulls
+    # Submission Details
+    merged['submission_details'] = SubmissionDetail().dict()
+    submission_fields = ['deadline_date', 'deadline_time', 'submission_method']
+    for field in submission_fields:
+         for res in results:
+            if res.get('submission_details') and res['submission_details'].get(field):
+                merged['submission_details'][field] = res['submission_details'][field]
+                break
+
+    # Formatting Requirements
+    merged['formatting_requirements'] = FormattingRequirements().dict()
+    formatting_simple_fields = ['font_details', 'line_spacing']
+    for field in formatting_simple_fields:
+         for res in results:
+             if res.get('formatting_requirements') and res['formatting_requirements'].get(field):
+                 merged['formatting_requirements'][field] = res['formatting_requirements'][field]
+                 break
+
+    # Lists: Combine unique items
+    # Page Limits (handle potential duplicate sections)
+    seen_page_limits = set()
+    for res in results:
+        if res.get('formatting_requirements') and res['formatting_requirements'].get('page_limits'):
+            for limit in res['formatting_requirements']['page_limits']:
+                 limit_tuple = (limit.get('section', 'general'), limit.get('page_limit'))
+                 if limit_tuple[1] is not None and limit_tuple not in seen_page_limits:
+                      merged['formatting_requirements']['page_limits'].append(limit)
+                      seen_page_limits.add(limit_tuple)
+
+    # Required Sections
+    seen_sections = set()
+    for res in results:
+        if res.get('formatting_requirements') and res['formatting_requirements'].get('required_sections'):
+            for section in res['formatting_requirements']['required_sections']:
+                if section and section not in seen_sections:
+                     merged['formatting_requirements']['required_sections'].append(section)
+                     seen_sections.add(section)
+
+    # Eligibility Criteria (handle potential duplicate details for same type)
+    seen_eligibility = set()
+    for res in results:
+        if res.get('eligibility_criteria'):
+            for criterion in res['eligibility_criteria']:
+                 # Use type and details to check for uniqueness
+                 # Consider normalizing details (lowercase, strip) for better matching
+                 criterion_tuple = (criterion.get('requirement_type'), criterion.get('details', '').lower().strip())
+                 if criterion_tuple[0] and criterion_tuple[1] and criterion_tuple not in seen_eligibility:
+                      merged['eligibility_criteria'].append(criterion)
+                      seen_eligibility.add(criterion_tuple)
+
+    # Clean up empty nested objects if no details were found
+    if all(v is None for v in merged['submission_details'].values()):
+        merged['submission_details'] = None
+    if all(v is None or v == [] for v in merged['formatting_requirements'].values()):
+         merged['formatting_requirements'] = None
+
+    print("[Analysis Merge] Merging complete.")
+    return merged
+
+# --- Updated LLM Extraction Function ---
+def extract_structured_rfp_data(text: str) -> Dict:
     """
-    Processes text using spaCy and regex to extract entities and their
-    surrounding sentence context, relevant for RFPs.
-
-    Args:
-        text: The input string (e.g., a section or full text of an RFP).
-
-    Returns:
-        A dictionary grouping extracted items by label. Each item is a
-        dictionary containing 'text' (the entity) and 'context' (the sentence).
-        e.g., {'DATE': [{'text': 'December 15, 2024', 'context': 'Proposals must be received...'}], ...}
+    Uses a dedicated analysis LLM to extract structured info from RFP text in chunks.
     """
-    if not nlp:
-        print("Skipping entity extraction because spaCy model is not loaded (load failed during startup).")
-        return {"error": "spaCy model failed to load during application startup. Check backend logs."} # More informative error
+    if not llm:
+        return {"error": "Analysis LLM not initialized. Cannot perform extraction."}
+    if not text:
+        return {"error": "No text provided for analysis."}
 
-    print(f"\n[NER Context] Processing text for entities (length: {len(text)} chars)...")
-    doc = nlp(text)
+    print(f"\n[Analysis Chunking] Splitting text (length: {len(text)} chars)...")
+    chunks = text_splitter.split_text(text)
+    print(f"[Analysis Chunking] Created {len(chunks)} chunks.")
 
-    entities_with_context = defaultdict(list)
-    processed_spans = set() # Keep track of text spans already processed by spaCy NER
+    all_chunk_results = []
+    has_errors = False
+    parser = PydanticOutputParser(pydantic_object=RFPAnalysis)
 
-    # --- Standard SpaCy Entity Extraction with Context ---
-    print("[NER Context] Extracting standard entities...")
-    for ent in doc.ents:
-        # Filter for potentially relevant labels
-        relevant_labels = ["DATE", "ORG", "GPE", "LAW", "PRODUCT", "QUANTITY", "MONEY", "CARDINAL"]
-        if ent.label_ in relevant_labels:
-            entity_text = ent.text.strip()
-            # Use ent.sent to get the sentence containing the entity
-            # Add a check here in case senter failed silently
-            if not ent.sent:
-                 print(f"Warning: No sentence found for entity '{entity_text}'. Is 'senter' pipe active?")
-                 sentence_context = "[Context Unavailable]" # Fallback context
+    # --- MODIFIED: Stricter Prompt Template ---
+    prompt_template = """
+    You are an expert assistant analyzing sections of a Request for Proposals (RFP).
+    Carefully read the following RFP text section and extract ONLY the information relevant to this section that matches the JSON schema.
+    Format your output strictly according to the provided JSON schema.
+    If information for a field is not present IN THIS SECTION, omit the field or use null. Do not guess information from other potential sections.
+
+    IMPORTANT: Your response MUST be ONLY the JSON object requested, enclosed in triple backticks using the json format marker (```json ... ```).
+    Do NOT include any explanations, apologies, greetings, or any other text outside the ```json ... ``` block.
+
+    {format_instructions}
+
+    RFP Text Section:
+    -------
+    {rfp_section_text}
+    -------
+
+    Extracted Information from this section (JSON):
+    ```json
+    """ # Add the opening fence to guide the model
+
+    prompt = PromptTemplate(
+        template=prompt_template,
+        input_variables=["rfp_section_text"],
+        partial_variables={"format_instructions": parser.get_format_instructions()},
+    )
+
+    for i, chunk in enumerate(chunks):
+        print(f"[Analysis Processing] Processing chunk {i + 1}/{len(chunks)} using {LLM_MODEL_NAME}...")
+        cleaned_output = "" # Initialize cleaned output string
+        raw_output = "" # Initialize raw_output
+        try:
+            _input = prompt.format_prompt(rfp_section_text=chunk)
+            raw_output = llm.invoke(_input.to_string()) # Store raw output
+
+            # --- ADDED: Clean the raw output ---
+            # Remove potential markdown fences and surrounding whitespace/newlines
+            if raw_output.strip().startswith("```json"):
+                cleaned_output = raw_output.strip()[7:] # Remove ```json
+            elif raw_output.strip().startswith("```"):
+                 cleaned_output = raw_output.strip()[3:] # Remove ```
             else:
-                 sentence_context = ent.sent.text.strip()
+                 cleaned_output = raw_output
 
-            if entity_text and sentence_context:
-                # Check if this span overlaps significantly with a custom match later
-                span_tuple = (ent.start_char, ent.end_char)
+            if cleaned_output.strip().endswith("```"):
+                cleaned_output = cleaned_output.strip()[:-3] # Remove trailing ```
 
-                entities_with_context[ent.label_].append({
-                    "text": entity_text,
-                    "context": sentence_context
-                })
-                processed_spans.add(span_tuple) # Mark this span as processed
+            cleaned_output = cleaned_output.strip() # Final strip
+            # ---------------------------------
 
-    # --- Custom Pattern Extraction with Context ---
-    # Certifications, Formatting, etc.
-    custom_patterns = {
-        "CERTIFICATION": [
-            r"\bISO\s?\d{4,5}\b",
-            r"\bCMMC\s?(Level|Lvl)\s?\d\b",
-            r"\bFedRAMP\s?(High|Moderate|Low)?\b",
-        ],
-        "PAGE_LIMIT": [
-            r"(\d+)\s*page\s*limit",
-            r"limit\s*of\s*(\d+)\s*pages",
-            r"not\s*exceed\s*(\d+)\s*pages",
-        ],
-        "FONT_REQUIREMENT": [
-             # Match common phrases like "font shall be Times New Roman 12pt"
-             r"(font|typeface)\s*(?:shall|must)\s*be\s*([A-Za-z\s.\-]+(?:,\s*\d+[\s-]*pt)?)", # More flexible font capture
-             # Match phrases like "12-point Times New Roman font"
-             r"(\d+[\s-]*pt|\d+[\s-]*point)[\s,]+([A-Za-z\s.\-]+?)\s+(?:font|typeface)",
-        ],
-         "SUBMISSION_METHOD": [
-            # Look for keywords related to how to submit
-            r"(submit|submission).*(electronically|via\s+\w+\s+system|email|mail|hand-deliver)",
-        ]
-        # Add more categories and patterns as needed
-    }
+            # print(f"[Analysis DEBUG] Cleaned Output chunk {i+1}:\n{cleaned_output}\n") # Debug cleaned output
 
-    print("[NER Context] Extracting custom patterns...")
-    # Use doc.sents only if senter seems active based on pipeline check during load
-    sentence_list = []
-    if nlp and nlp.has_pipe("senter"):
-        sentence_list = list(doc.sents)
-    else:
-        # Fallback: Split by newline if sentences aren't available
-        print("Warning: 'senter' pipe inactive, falling back to newline splitting for custom patterns.")
-        sentence_list = [span for span in text.split('\n') if span.strip()] # Basic split
-
-
-    for label, patterns in custom_patterns.items():
-        found_items = set() # Use set to store tuples of (item_text, sentence_text) to avoid duplicates per sentence
-        for pattern in patterns:
+            # Attempt to parse the cleaned output
             try:
-                # Find all matches in the full text first to get the precise match text
-                matches = re.finditer(pattern, text, re.IGNORECASE)
-                for match in matches:
-                    # Check if this match was already covered by spaCy NER to avoid redundancy
-                    match_span = (match.start(), match.end())
-                    already_processed = False
-                    for proc_span in processed_spans:
-                         # Basic overlap check (can be refined)
-                        if max(match_span[0], proc_span[0]) < min(match_span[1], proc_span[1]):
-                            already_processed = True
-                            break
-                    if already_processed:
-                        continue
+                # --- ADDED: Attempt to load as JSON first for better error context ---
+                try:
+                     json_object = json.loads(cleaned_output)
+                     parsed_output = RFPAnalysis.parse_obj(json_object) # Parse from dict
+                except json.JSONDecodeError as json_err:
+                    # If basic JSON loading fails, re-raise a more informative error
+                    raise ValueError(f"Output is not valid JSON: {json_err}") from json_err
+                except Exception as pydantic_err: # Catch Pydantic validation errors specifically
+                    raise ValueError(f"JSON is valid, but does not match Pydantic schema: {pydantic_err}") from pydantic_err
+                # ----------------------------------------------------------------------
 
-                    # Determine the exact text to capture
-                    # If regex has capture groups, prioritize group 1 or 2 based on pattern
-                    captured_text = match.group(0) # Default to full match
-                    if label == "PAGE_LIMIT" and match.groups():
-                         captured_text = match.group(1) # Capture the number
-                    elif label == "FONT_REQUIREMENT" and len(match.groups()) > 1 :
-                        # Combine relevant groups for font info
-                         group1 = match.group(1)
-                         group2 = match.group(2)
-                         if group1 is not None and group1.lower() in ['font', 'typeface']: # Pattern 1 matched
-                              captured_text = group2.strip() if group2 else group1 # Use group 2 if present
-                         elif group1 is not None and group2 is not None: # Pattern 2 matched
-                             captured_text = f"{group1.strip()} {group2.strip()}"
-                         # Add more specific handling if needed based on regex group structure
+                all_chunk_results.append(parsed_output.dict())
+                print(f"[Analysis Processing] Chunk {i + 1} parsed successfully.")
 
-                    # Find the sentence containing this match
-                    match_sentence = "[Context Unavailable - Senter Inactive]"
-                    if sentence_list and isinstance(sentence_list[0], spacy.tokens.Span): # Check if we have actual spaCy sentences
-                        for sent in sentence_list:
-                            # Ensure sent is a valid Span object with start/end chars
-                            if hasattr(sent, 'start_char') and hasattr(sent, 'end_char'):
-                               if match.start() >= sent.start_char and match.end() <= sent.end_char:
-                                  match_sentence = sent.text.strip()
-                                  break
-                            else:
-                                print(f"Warning: Invalid sentence object encountered: {sent}")
-                    elif sentence_list: # If using fallback split list
-                         for line in sentence_list:
-                              if match.group(0) in line: # Simple check if match is in the line
-                                   match_sentence = line.strip()
-                                   break
+            except Exception as parse_error:
+                 # --- MODIFIED: Log the FULL cleaned output ---
+                 print(f"[Analysis Processing] Warning: Failed to parse CLEANED output for chunk {i + 1}.")
+                 print(f"  Parse Error Type: {type(parse_error).__name__}")
+                 print(f"  Parse Error Details: {parse_error}")
+                 print(f"--- FULL Cleaned Output for Chunk {i+1} ---")
+                 print(cleaned_output)
+                 print(f"--- END Cleaned Output ---")
+                 # ----------------------------------------------
 
+        except Exception as llm_error:
+            print(f"[Analysis Processing] Error invoking Analysis LLM ({LLM_MODEL_NAME}) for chunk {i + 1}: {llm_error}")
+            # Optionally log raw_output here too if LLM fails completely
+            # print(f"--- Raw Output (LLM Error) --- \n{raw_output}\n--- End Raw Output ---")
+            has_errors = True
 
-                    if match_sentence and match_sentence != "[Context Unavailable - Senter Inactive]":
-                        item_text = captured_text.strip()
-                        if item_text:
-                             found_items.add((item_text, match_sentence))
+    if not all_chunk_results and has_errors:
+         return {"error": f"Analysis LLM ({LLM_MODEL_NAME}) invocation failed for all chunks."}
+    if not all_chunk_results:
+         return {"warning": "No structured data could be extracted from any chunk.", "details": {}}
 
-            except re.error as e:
-                print(f"Warning: Regex error for pattern '{pattern}': {e}")
-            except Exception as e_match: # Catch other potential errors during matching/group access
-                print(f"Warning: Error processing match for pattern '{pattern}': {e_match}")
-
-
-        # Add unique found items to the results dictionary
-        if found_items:
-            # Sort by the order they appear in the text (approximated by sentence start)
-            # Storing sentence start char for sorting
-            sorted_items_with_pos = []
-            for item, context_sentence in found_items:
-                # Be robust: find might return -1 if context changed slightly
-                start_pos = text.find(context_sentence) if context_sentence != "[Context Unavailable - Senter Inactive]" else float('inf')
-                sorted_items_with_pos.append((start_pos, {"text": item, "context": context_sentence}))
-
-            # Sort based on start position
-            sorted_items_with_pos.sort(key=lambda x: x[0])
-
-            # Extract sorted dictionaries
-            entities_with_context[label].extend([item_dict for _, item_dict in sorted_items_with_pos])
-
-
-    # Optional: Deduplicate identical text/context pairs within a label list if needed (more robustly)
-    final_result = {}
-    for label, items in entities_with_context.items():
-        unique_items_final = []
-        seen_final = set()
-        for item in items:
-            item_tuple = (item['text'], item['context'])
-            if item_tuple not in seen_final:
-                unique_items_final.append(item)
-                seen_final.add(item_tuple)
-        if unique_items_final: # Only add label if it has items
-            final_result[label] = unique_items_final
-
-
-    print(f"[NER Context] Extraction complete. Found items in categories: {list(final_result.keys())}")
-    return final_result
+    try:
+        final_merged_data = merge_analysis_results(all_chunk_results)
+        return final_merged_data
+    except Exception as merge_error:
+        print(f"[Analysis Merge] Error during merging: {merge_error}")
+        return {"error": f"Failed to merge results from chunks: {merge_error}"}
 
 
 # --- Example Usage ---
 if __name__ == "__main__":
-    print("--- NER Model with Context Example ---")
-
-    # Ensure model is loaded before running example
-    if nlp:
+    print("\n--- LLM Structured Extraction Example (Chunked) ---")
+    if llm:
         sample_rfp_text = """
-        **Submission Deadline:** Proposals must be received no later than 5:00 PM EST on December 15, 2024.
-        Submit proposals electronically via the NASA NSPIRES system. Email submissions are not accepted.
-        The proposing organization must be registered to do business in the state of Virginia (VA).
-        Offerors must possess active ISO 9001 certification at the time of proposal submission.
-        Experience with Agile methodologies is required. CMMC Level 2 compliance is mandatory. FedRAMP Moderate is preferred.
-        The technical volume shall not exceed 25 pages. There is a limit of 5 pages for the management plan.
-        The font must be Times New Roman, 12pt. Use standard 12-point Arial font for appendices.
-        Any questions should be directed to John Doe, Contracting Officer.
-        The contract value is estimated at $1.5M. Payment terms are Net 30.
-        Reference solicitation number: NASA-RFP-2024-XYZ. See FAR Clause 52.212-4.
+        **REQUEST FOR PROPOSAL (RFP)**
+        **Solicitation Number:** HHS-2024-PROCURE-007
+        **Issuing Agency:** Department of Health Services (DHS)
+        **Project Title:** Cloud Migration Services
+
+        **Submission Deadline:** Proposals must be submitted electronically via FedConnect no later than **August 30, 2024, 2:00 PM Eastern Time**. Late proposals will not be considered. Email submissions are prohibited.
+
+        **Eligibility:** Offerors must be registered in SAM.gov and possess active **FedRAMP Moderate** certification for their proposed cloud solution. Bidders must demonstrate **at least 5 years** of experience migrating similar workloads to the cloud for federal agencies. Must be authorized to work in Virginia.
+
+        **Formatting:** The technical proposal is limited to **30 pages**. The management proposal must not exceed **15 pages**. Use **Times New Roman, 11pt font** with single line spacing. A Table of Contents is required. Appendices do not count towards page limits.
+
+        **Contact:** Jane Smith, jane.smith@dhs.example.gov
+
+        --- Next Section ---
+
+        Additional requirements include ISO 27001 compliance. The overall proposal should follow standard governmental formatting. Ensure all attachments listed in Appendix B are included. Line spacing must be exactly single spaced. Prior experience with DHS systems is preferred but not mandatory. The final submission method is solely through the FedConnect portal.
         """
 
-        extracted_data = extract_entities_with_context(sample_rfp_text)
+        extracted_data = extract_structured_rfp_data(sample_rfp_text)
 
-        print("\n--- Extracted Entities with Context: ---")
-        for label, items in extracted_data.items():
-            print(f"\n=== {label} ===")
-            for item in items:
-                print(f"  - Text: '{item['text']}'")
-                print(f"    Context: \"{item['context']}\"")
-        print("--------------------------------------")
+        print("\n--- Extracted Structured Data (Merged): ---")
+        print(json.dumps(extracted_data, indent=2))
+        print("----------------------------------------")
     else:
-        print("\nCannot run example because spaCy model failed to load.")
+        print("\nCannot run example because Ollama LLM failed to initialize.")

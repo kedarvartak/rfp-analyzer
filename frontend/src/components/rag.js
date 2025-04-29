@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { FiUploadCloud, FiHelpCircle, FiCheckCircle, FiAlertTriangle, FiLoader, FiDatabase, FiTerminal, FiFileText, FiZap, FiCpu } from 'react-icons/fi';
+import { FiUploadCloud, FiHelpCircle, FiCheckCircle, FiAlertTriangle, FiLoader, FiDatabase, FiTerminal, FiFileText, FiZap, FiCpu, FiClipboard, FiCalendar, FiPaperclip, FiCheckSquare, FiAlertCircle } from 'react-icons/fi';
 
 // Minimalist Icon Components (Keep if preferred)
 const UploadIcon = () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>;
@@ -46,11 +46,11 @@ export default function RAGInterface({
   const [ragResults, setRagResults] = useState(results || null);
   const [ragError, setRagError] = useState(error || null);
 
-  // --- NEW State for NER ---
-  const [nerResults, setNerResults] = useState(null);
-  const [nerLoading, setNerLoading] = useState(false);
-  const [nerError, setNerError] = useState(null);
-  // -------------------------
+  // --- RENAMED State for Analysis Results ---
+  const [analysisResults, setAnalysisResults] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState(null);
+  // ------------------------------------------
 
   // Example state for progress simulation
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -73,12 +73,12 @@ export default function RAGInterface({
       if (isUploading && uploadProgress === 0) setLogMessages(prev => [...prev, `UPLOADING :: ${currentFileName || 'Starting...'}`]);
       if (isUploading && uploadProgress === 100) setLogMessages(prev => [...prev, `UPLOAD_COMPLETE :: ${currentFileName}`]);
       if (ragLoading) setLogMessages(prev => [...prev, `PROCESSING_QUERY :: ${query.substring(0, 20)}...`]);
-      if (nerLoading) setLogMessages(prev => [...prev, `EXTRACTING_ENTITIES :: Processing...`]);
+      if (analysisLoading) setLogMessages(prev => [...prev, `ANALYZING_RFP :: Processing...`]);
       if (ragError) setLogMessages(prev => [...prev, `ERROR (RAG) :: ${ragError}`]);
-      if (nerError) setLogMessages(prev => [...prev, `ERROR (NER) :: ${nerError}`]);
+      if (analysisError) setLogMessages(prev => [...prev, `ERROR (Analysis) :: ${analysisError}`]);
       if (ragResults && !ragLoading) setLogMessages(prev => [...prev, `RESPONSE_GENERATED :: OK`]);
-      if (nerResults && !nerLoading) setLogMessages(prev => [...prev, `ENTITY_EXTRACTION :: COMPLETE`]);
-  }, [ragLoading, nerLoading, ragError, nerError, ragResults, nerResults, isUploading, uploadProgress, currentFileName, query]);
+      if (analysisResults && !analysisLoading) setLogMessages(prev => [...prev, `RFP_ANALYSIS :: COMPLETE`]);
+  }, [ragLoading, analysisLoading, ragError, analysisError, ragResults, analysisResults, isUploading, uploadProgress, currentFileName, query]);
 
 
   // --- Wrapped Handlers to manage local state ---
@@ -90,8 +90,8 @@ export default function RAGInterface({
     setIsUploading(true);
     setUploadProgress(0);
     setCurrentIsUploaded(false); // Reset upload status
-    setNerResults(null); // Clear previous NER results
-    setNerError(null);
+    setAnalysisResults(null);
+    setAnalysisError(null);
     setRagResults(null); // Clear previous RAG results
     setRagError(null);
 
@@ -142,39 +142,32 @@ export default function RAGInterface({
       }
   };
 
-  // --- NEW Handler for NER ---
-  const handleAnalyzeEntities = async () => {
-      setNerLoading(true);
-      setNerError(null);
-      setNerResults(null);
-      setLogMessages(prev => [...prev, `REQ :: /extract-entities`]);
+  // --- RENAMED Handler for Structured Analysis ---
+  const handleAnalyzeRfp = async () => {
+      setAnalysisLoading(true);
+      setAnalysisError(null);
+      setAnalysisResults(null);
+      setLogMessages(prev => [...prev, `REQ :: /analyze-rfp-details`]);
 
       try {
-          const response = await fetch('http://localhost:8000/extract-entities');
+          const response = await fetch('http://localhost:8000/analyze-rfp-details');
           if (!response.ok) {
               const errorData = await response.json();
               throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
           }
           const data = await response.json();
-
-          // --- TEMPORARY: ADD DUMMY DATA TO FORCE SCROLL FOR TESTING ---
-          // Remove this block after confirming scrollbar appearance/styling
-          // const dummyData = {};
-          // for (let i = 1; i <= 15; i++) {
-          //    dummyData[`LABEL_${i}`] = Array.from({ length: 5 }, (_, k) => `Dummy Item ${k+1} for Label ${i}`);
-          // }
-          // setNerResults({ ...data, ...dummyData });
-          // --------------------------------------------------------------
-          setNerResults(data); // Use this line normally
-
+          if (data.error) {
+            throw new Error(data.error);
+          }
+          setAnalysisResults(data);
       } catch (err) {
-          console.error("NER Fetch Error:", err);
-          setNerError(err.message || "Failed to fetch entities.");
+          console.error("RFP Analysis Fetch Error:", err);
+          setAnalysisError(err.message || "Failed to fetch analysis details.");
       } finally {
-          setNerLoading(false);
+          setAnalysisLoading(false);
       }
   };
-  // -------------------------
+  // ------------------------------------------
 
   return (
     <div ref={containerRef} className="h-screen w-screen bg-black text-white font-mono border-4 border-white grid grid-rows-[auto_1fr_auto] overflow-hidden">
@@ -208,7 +201,7 @@ export default function RAGInterface({
                 </div>
               <input type="file" className="hidden" onChange={handleFileChange} accept=".pdf,.txt,.md" disabled={isUploading} />
               </label>
-            {(isUploading || currentIsUploaded) && (
+              {(isUploading || currentIsUploaded) && (
                  <div className="w-full bg-black/50 border border-white/30 mt-3 h-3">
                    <div className={`h-full ${isUploading ? 'bg-yellow-400' : 'bg-green-500'}`} style={{ width: `${currentIsUploaded ? 100 : uploadProgress}%`, transition: isUploading ? 'width 0.15s linear' : 'none' }}></div>
                 </div>
@@ -242,7 +235,7 @@ export default function RAGInterface({
                   let color = 'text-white/60';
                   if (log.includes('ERROR')) color = 'text-red-500';
                   else if (log.includes('OK') || log.includes('COMPLETE') || log.includes('GENERATED')) color = 'text-green-400';
-                  else if (log.includes('PROCESSING') || log.includes('UPLOADING') || log.includes('EXTRACTING')) color = 'text-yellow-400';
+                  else if (log.includes('PROCESSING') || log.includes('UPLOADING') || log.includes('ANALYZING')) color = 'text-yellow-400';
                   return <p key={i} className={`text-[10px] ${color} mb-0.5 whitespace-nowrap font-medium`}>&gt; {log}</p>
                })}
           </div>
@@ -279,56 +272,78 @@ export default function RAGInterface({
              </Panel>
          </section>
 
-        {/* --- Right Column: NER Output & Actions --- */}
+        {/* --- Right Column: Structured Analysis Output & Actions --- */}
         <section className="col-span-1 flex flex-col gap-0 overflow-hidden">
-             <Panel title="Entity Extraction (NER)" icon={<FiCpu />} className="flex-1 min-h-0">
+             <Panel title="RFP Analysis Details" icon={<FiClipboard />} className="flex-1 min-h-0">
                  <button
-                   onClick={handleAnalyzeEntities}
-                   disabled={!currentIsUploaded || nerLoading || isUploading}
-                   className={`w-full mb-4 flex-shrink-0 flex items-center justify-center gap-2 relative px-4 py-2 border-2 border-white bg-black text-[10px] font-bold tracking-[0.2em] hover:bg-white hover:text-black transition-none duration-0 active:translate-y-px active:translate-x-px ${(!currentIsUploaded || isUploading) ? 'opacity-40 cursor-not-allowed' : 'hover:shadow-[3px_3px_0px_#FFF]'} ${nerLoading ? 'opacity-70 cursor-wait' : ''}`}
+                   onClick={handleAnalyzeRfp}
+                   disabled={!currentIsUploaded || analysisLoading || isUploading}
+                   className={`w-full mb-4 flex-shrink-0 flex items-center justify-center gap-2 relative px-4 py-2 border-2 border-white bg-black text-[10px] font-bold tracking-[0.2em] hover:bg-white hover:text-black transition-none duration-0 active:translate-y-px active:translate-x-px ${(!currentIsUploaded || isUploading) ? 'opacity-40 cursor-not-allowed' : 'hover:shadow-[3px_3px_0px_#FFF]'} ${analysisLoading ? 'opacity-70 cursor-wait' : ''}`}
                  >
-                   {nerLoading ? <><LoadingIcon />ANALYZING</> : (!currentIsUploaded || isUploading) ? 'AWAITING DATA' : 'ANALYZE ENTITIES'}
+                   {analysisLoading ? <><LoadingIcon />ANALYZING</> : (!currentIsUploaded || isUploading) ? 'AWAITING DATA' : 'ANALYZE RFP'}
                  </button>
 
                  <div className="flex-1 border-2 border-white/40 bg-black/60 p-4 overflow-y-auto
                                  scrollbar scrollbar-w-1.5 scrollbar-track-black/30 scrollbar-thumb-white/50 hover:scrollbar-thumb-white/70">
-                     {nerError && !nerLoading && (
+                     {analysisError && !analysisLoading && (
                        <div className="flex items-start space-x-2 text-red-500">
                          <FiAlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0"/>
-                         <span className="text-xs font-semibold">{nerError}</span>
+                         <span className="text-xs font-semibold">{analysisError}</span>
                        </div>
                      )}
-                     {!nerError && nerResults && !nerLoading && (
-                       <div className="space-y-4">
-                         {Object.entries(nerResults).length > 0 ? (
-                           Object.entries(nerResults).map(([label, items]) => (
-                             <div key={label}>
-                               <h4 className="text-[11px] font-bold tracking-widest text-white/80 border-b border-white/20 pb-1 mb-2">{label}</h4>
-                               <ul className="space-y-2 pl-2">
-                                 {Array.isArray(items) ? items.map((itemData, i) => (
-                                   <li key={i} className="text-xs border border-white/10 p-1.5 bg-black/20">
-                                     <strong className="text-white/90 font-semibold block mb-0.5">Found:</strong> {itemData.text}
-                                     <hr className="border-dotted border-white/20 my-1" />
-                                     <span className="text-white/60 block leading-snug"><strong className="text-white/70">Context:</strong> {itemData.context}</span>
-                                   </li>
-                                 )) : (
-                                   <li className="text-xs text-red-500">Error: Invalid data format for {label}</li>
-                                 )}
-                               </ul>
-                             </div>
-                           ))
-                         ) : (
-                            <p className="text-xs text-white/50 italic">No relevant entities found.</p>
-                         )}
+                     {!analysisError && analysisResults && !analysisLoading && (
+                       <div className="space-y-5 text-xs">
+                          <div>
+                              <InfoItem label="Issuing Agency" value={analysisResults.issuing_agency} />
+                              <InfoItem label="Solicitation #" value={analysisResults.solicitation_number} />
+                          </div>
+
+                          {analysisResults.submission_details && (
+                              <div>
+                                  <SectionTitle title="Submission" icon={<FiCalendar />} />
+                                  <InfoItem label="Deadline Date" value={analysisResults.submission_details.deadline_date} />
+                                  <InfoItem label="Deadline Time" value={analysisResults.submission_details.deadline_time} />
+                                  <InfoItem label="Method" value={analysisResults.submission_details.submission_method} />
+                              </div>
+                          )}
+
+                          {analysisResults.formatting_requirements && (
+                              <div>
+                                  <SectionTitle title="Formatting" icon={<FiPaperclip />} />
+                                  <InfoItem label="Font" value={analysisResults.formatting_requirements.font_details} />
+                                  <InfoItem label="Spacing" value={analysisResults.formatting_requirements.line_spacing} />
+                                  {analysisResults.formatting_requirements.page_limits?.map((pl, i) => (
+                                      <InfoItem key={`pl-${i}`} label={`Page Limit (${pl.section || 'General'})`} value={pl.page_limit} />
+                                  ))}
+                                   {analysisResults.formatting_requirements.required_sections?.length > 0 && (
+                                      <InfoList label="Required Sections" items={analysisResults.formatting_requirements.required_sections} />
+                                  )}
+                              </div>
+                          )}
+
+                           {analysisResults.eligibility_criteria?.length > 0 && (
+                              <div>
+                                  <SectionTitle title="Eligibility Criteria" icon={<FiCheckSquare />} />
+                                  {analysisResults.eligibility_criteria.map((ec, i) => (
+                                      <div key={`ec-${i}`} className="mb-1.5 pl-2 border-l border-white/20">
+                                          <InfoItem label={ec.requirement_type} value={ec.details} />
+                                          {ec.is_mandatory !== null && (
+                                              <InfoItem label="Mandatory" value={ec.is_mandatory ? 'Yes' : 'No'} color={ec.is_mandatory ? 'text-green-400' : 'text-yellow-400'} />
+                                          )}
+                                      </div>
+                                  ))}
+                              </div>
+                          )}
+
                        </div>
                      )}
-                     {!nerError && !nerResults && !nerLoading && (
-                         <p className="text-xs text-white/50 italic">NER Output display area.</p>
+                     {!analysisError && !analysisResults && !analysisLoading && (
+                         <p className="text-xs text-white/50 italic">RFP Analysis display area. Click "Analyze RFP" after upload.</p>
                      )}
-                      {nerLoading && (
+                      {analysisLoading && (
                          <div className="flex items-center space-x-2 text-xs text-yellow-400">
                              <LoadingIcon />
-                             <span>Extracting entities...</span>
+                             <span>Analyzing RFP structure...</span>
                          </div>
                      )}
                  </div>
@@ -344,6 +359,37 @@ export default function RAGInterface({
 
     </div>
   );
+}
+
+// --- Helper components for structured display ---
+const SectionTitle = ({ title, icon }) => (
+    <h4 className="text-[11px] flex items-center gap-2 font-bold tracking-widest text-white/80 border-b border-white/20 pb-1 mb-2 mt-3 first:mt-0">
+        {icon} {title}
+    </h4>
+);
+
+const InfoItem = ({ label, value, color = 'text-white/70' }) => {
+    if (!value && value !== 0 && value !== false) return null; // Don't render if value is null/undefined/empty string
+    return (
+        <p className="text-[10px] mb-0.5">
+            <span className="text-white/50 font-medium w-24 inline-block">{label}:</span>
+            <span className={`${color} font-semibold`}>{String(value)}</span>
+        </p>
+    );
+};
+
+const InfoList = ({ label, items }) => {
+    if (!items || items.length === 0) return null;
+    return (
+         <div>
+             <p className="text-[10px] text-white/50 font-medium mb-0.5">{label}:</p>
+             <ul className="list-disc list-inside pl-2">
+                 {items.map((item, i) => (
+                    <li key={i} className="text-xs text-white/70">{item}</li>
+                 ))}
+             </ul>
+         </div>
+    );
 }
 
 /* Add scrollbar utility classes & animations to global CSS */
