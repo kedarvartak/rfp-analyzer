@@ -76,8 +76,6 @@ The results from both BM25 and semantic search are combined by an **Ensemble Ret
 
 ## Setup & Installation
 
-**(TODO: Add specific setup instructions here)**
-
 1.  **Prerequisites:**
     *   Python 3.9+
     *   Node.js & npm/yarn
